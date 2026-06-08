@@ -1,0 +1,5 @@
+[project]
+name = "letter-box"
+version = "0.1.0"
+description = "Two-layer async letter exchange system via Notion API"
+dependencies = ["python-dotenv>=1.0.0"]
