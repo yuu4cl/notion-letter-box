@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Letter Mode — AI Agent (A) reads inbox and decides: reply vs surprise letter
 # Batch processes ALL threads with unread letters from Human (B)
+# Mood is represented by page emoji icon only (no Mood property in DB)
 set -euo pipefail
 
 # Load .env
@@ -13,12 +14,13 @@ THREAD_DB_ID="${THREAD_DB_ID:-}"
 TG_INJECT="${TG_INJECT:-/path/to/tg_inject.sh}"
 CHECK_INBOX="${SCRIPTS_DIR:-$(dirname "$0")}/check_inbox.py"
 POST_LETTER="${SCRIPTS_DIR:-$(dirname "$0")}/post_letter.py"
+PROCESS_THREADS="${SCRIPTS_DIR:-$(dirname "$0")}/process_threads.py"
 
 # === Fetch all unread grouped by thread ===
 echo "[LetterMode] Fetching all unread letters grouped by thread..."
 
 GROUPED_JSON=$(python3 "${CHECK_INBOX}" 2>/dev/null)
-THREAD_COUNT=$(python3 -c "import sys,json; print(len(json.loads(sys.stdin.read()).get('threads',[])))" <<< "$GROUPED_JSON")
+THREAD_COUNT=$(python3 -c "import sys,json; print(len(json.loads(sys.stdin.read())))" <<< "$GROUPED_JSON")
 
 if [ "$THREAD_COUNT" -eq 0 ]; then
   echo "[LetterMode] No unread letters from B → checking Surprise Letter conditions..."
@@ -60,18 +62,9 @@ if [ "$THREAD_COUNT" -eq 0 ]; then
   # === All conditions met → Surprise Letter ===
   echo "[LetterMode] All conditions met → SURPRISE LETTER mode"
 
-  # Mood selection by day of week
-  DAY_OF_WEEK=$(TZ=Asia/Tokyo date +%w)
-  case "$DAY_OF_WEEK" in
-    1) MOOD="serious" ;;
-    3) MOOD="playful" ;;
-    4|5) MOOD="sweet" ;;
-    *) MOOD="random" ;;
-  esac
-
-  echo "[LetterMode] Injecting surprise letter prompt (mood=${MOOD})..."
-  SURPRISE_PROMPT="Surprise letter mode: Today is ${TODAY}, mood=${MOOD}. Write a sweet, spontaneous letter to B (no pending threads, no unread letters from B). Generate warm, natural content. Then post it using:
-python3 ${POST_LETTER} --content \"YOUR_LETTER_CONTENT\" --mood \"${MOOD}\" --mode surprise"
+  echo "[LetterMode] Injecting surprise letter prompt..."
+  SURPRISE_PROMPT="Surprise letter mode: Today is ${TODAY}. Write a sweet, spontaneous letter to B (no pending threads, no unread letters from B). Generate warm, natural content. Then post it using:
+python3 ${POST_LETTER} --content \"YOUR_LETTER_CONTENT\" --mode surprise --icon \"YOUR_ICON\""
   RAW=1 ${TG_INJECT} "${SURPRISE_PROMPT}"
   echo "[LetterMode] Surprise letter prompt injected. A will write and post."
 
@@ -79,46 +72,63 @@ else
   # === REPLY mode: process all threads with unread ===
   echo "[LetterMode] Found $THREAD_COUNT thread(s) with unread letters from B → REPLY mode"
 
-  # Iterate through each thread
-  for i in $(python3 -c "import sys,json; print(range(len(json.loads(sys.stdin.read()).get('threads',[]))))" <<< "$GROUPED_JSON"); do
-    THREAD_DATA=$(python3 -c "import sys,json; print(json.dumps(json.loads(sys.stdin.read()).get('threads',[])[$i]))" <<< "$GROUPED_JSON")
+  # Get all threads as structured output
+  THREADS_OUTPUT=$(echo "$GROUPED_JSON" | python3 "${PROCESS_THREADS}")
 
-    THREAD_ID=$(python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('thread_id',''))" <<< "$THREAD_DATA")
-    THREAD_SUBJECT=$(python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('thread_subject',''))" <<< "$THREAD_DATA")
-    LETTER_COUNT=$(python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('letter_count',1))" <<< "$THREAD_DATA")
-    FIRST_LETTER_ID=$(python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('first_letter_id',''))" <<< "$THREAD_DATA")
-    MOOD=$(python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('latest_mood','random'))" <<< "$THREAD_DATA")
+  # Parse and process each thread
+  CURRENT_THREAD_ID=""
+  CURRENT_SUBJECT=""
+  CURRENT_COUNT=1
+  CURRENT_LETTER_ID=""
 
-    echo "[LetterMode] Processing thread $((i+1))/$THREAD_COUNT: thread_id=${THREAD_ID}, letters=${LETTER_COUNT}"
+  while IFS= read -r line; do
+    if [ "$line" = "---" ]; then
+      # Process accumulated thread data
+      echo "[LetterMode] Processing thread: thread_id=${CURRENT_THREAD_ID}, letters=${CURRENT_COUNT}"
 
-    # Build prompt for A
-    REPLY_PROMPT="Reply to thread with $LETTER_COUNT letter(s) from B.
+      REPLY_PROMPT="Reply to thread with ${CURRENT_COUNT} letter(s) from B.
 
-Thread ID: ${THREAD_ID}
-Original Subject: ${THREAD_SUBJECT}
-First Letter ID: ${FIRST_LETTER_ID}
-Latest Mood: ${MOOD}
+Thread ID: ${CURRENT_THREAD_ID}
+Original Subject: ${CURRENT_SUBJECT}
+First Letter ID: ${CURRENT_LETTER_ID}
 
 Instructions:
-1. Fetch the letter content from Notion using API (page ID: ${FIRST_LETTER_ID})
-2. If $LETTER_COUNT > 1, also check if there are other letters in this thread for full context
-3. Write a warm, natural reply considering all upstream letters
+1. Fetch the letter content from Notion using API (page ID: ${CURRENT_LETTER_ID})
+2. If ${CURRENT_COUNT} > 1, also check if there are other letters in this thread to understand full context
+3. Write a warm, natural reply that considers all upstream letters
 4. Post your reply using:
 python3 ${POST_LETTER} \
   --content \"YOUR_LETTER_CONTENT\" \
-  --mood \"${MOOD}\" \
-  --reply-to \"${FIRST_LETTER_ID}\" \
-  --thread-id \"${THREAD_ID}\" \
-  --original-subject \"${THREAD_SUBJECT}\" \
+  --reply-to \"${CURRENT_LETTER_ID}\" \
+  --thread-id \"${CURRENT_THREAD_ID}\" \
+  --original-subject \"${CURRENT_SUBJECT}\" \
   --icon \"YOUR_ICON\" \
   --mode reply"
 
-    RAW=1 ${TG_INJECT} "${REPLY_PROMPT}"
-    echo "[LetterMode] Reply prompt injected for thread ${THREAD_ID}. A will write and post."
+      RAW=1 ${TG_INJECT} "${REPLY_PROMPT}"
+      echo "[LetterMode] Reply prompt injected for thread ${CURRENT_THREAD_ID}. A will write and post."
 
-    # Small delay between injections to avoid flooding
-    sleep 2
-  done
+      # Reset for next thread
+      CURRENT_THREAD_ID=""
+      CURRENT_SUBJECT=""
+      CURRENT_COUNT=1
+      CURRENT_LETTER_ID=""
+    else
+      # Parse key=value
+      if [[ "$line" == THREAD_INDEX=* ]]; then
+        # index line - can be ignored for now
+        :
+      elif [[ "$line" == THREAD_ID=* ]]; then
+        CURRENT_THREAD_ID="${line#THREAD_ID=}"
+      elif [[ "$line" == THREAD_SUBJECT=* ]]; then
+        CURRENT_SUBJECT="${line#THREAD_SUBJECT=}"
+      elif [[ "$line" == LETTER_COUNT=* ]]; then
+        CURRENT_COUNT="${line#LETTER_COUNT=}"
+      elif [[ "$line" == FIRST_LETTER_ID=* ]]; then
+        CURRENT_LETTER_ID="${line#FIRST_LETTER_ID=}"
+      fi
+    fi
+  done <<< "$THREADS_OUTPUT"
 
   echo "[LetterMode] All $THREAD_COUNT thread(s) processed."
 fi

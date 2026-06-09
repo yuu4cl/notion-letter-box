@@ -2,20 +2,8 @@
 """Post a letter from A → B's Inbox via Notion API.
 Handles thread creation, original letter update, and read marking.
 Supports batch marking of all letters in a thread.
-Anonymized: A (sender agent), B (recipient human).
-
-Usage:
-  # Reply (auto-creates thread if needed, marks ALL unread in thread as read)
-  python3 post_letter.py --content "letter text" --mood "sweet" --reply-to "PAGE_ID"
-
-  # Reply with existing thread + original subject for human-readable subject
-  python3 post_letter.py --content "..." --mood "serious" --reply-to "PAGE_ID" --thread-id "thread-xyz" --original-subject "Original Subject Here"
-
-  # Surprise letter (creates its own thread)
-  python3 post_letter.py --content "..." --mood "sweet" --mode surprise
-
-  # With emoji icon (defaults to mood-based emoji if not provided)
-  python3 post_letter.py --content "..." --mood "sweet" --mode surprise --icon "💌"
+Mood is represented by page emoji icon only (no Mood property in DB).
+Icon decision is made by Claude (A), not by script.
 """
 import argparse
 import hashlib
@@ -34,14 +22,6 @@ JST = dt.timezone(dt.timedelta(hours=9))
 NOW_UTC = dt.datetime.now(dt.timezone.utc)
 TODAY_JST = dt.datetime.now(JST).strftime("%Y-%m-%d")
 
-# Mood → emoji mapping for page icons (defaults when --icon not provided)
-MOOD_ICONS = {
-    "serious": "📝",
-    "playful": "🥺",
-    "sweet": "💌",
-    "random": "💭",
-}
-
 
 # ── Notion API helpers ─────────────────────────────────────────────────────────
 
@@ -57,10 +37,18 @@ def notion_req(method, path, payload=None):
         return json.loads(resp.read())
 
 
+def is_page_archived(page_id):
+    """Check if a page is archived (deleted). Returns True if archived, False otherwise."""
+    try:
+        result = notion_req("GET", f"/pages/{page_id}")
+        return result.get("archived", False)
+    except Exception:
+        return True  # If we can't fetch, assume it's archived to be safe
+
+
 # ── Thread helpers ──────────────────────────────────────────────────────────────
 
 def new_thread_id():
-    """Generate a unique thread ID."""
     ts = NOW_UTC.strftime("%Y%m%d%H%M%S")
     return f"thread-{ts}-{hashlib.sha256(ts.encode()).hexdigest()[:6]}"
 
@@ -108,13 +96,16 @@ def get_letter_thread_id(page_id):
     result = get_letter(page_id)
     if not result:
         return ""
+    # Skip if page is archived
+    if result.get("archived", False):
+        return ""
     props = result.get("properties", {})
     tid = props.get("Thread ID", {}).get("rich_text", [])
     return tid[0].get("text", {}).get("content", "") if tid else ""
 
 
 def get_all_unread_in_thread(thread_id):
-    """Get ALL unread letter IDs in a specific thread from A's Inbox."""
+    """Get ALL unread letters in a specific thread from A's Inbox."""
     if not thread_id:
         return []
     result = notion_req("POST", f"/databases/{INBOX_ID_A}/query", {
@@ -128,6 +119,9 @@ def get_all_unread_in_thread(thread_id):
     })
     unread = []
     for p in result.get("results", []):
+        # Skip archived pages
+        if p.get("archived", False):
+            continue
         props = p.get("properties", {})
         read_at_prop = props.get("Read At", {})
         read_at_date = read_at_prop.get("date") if read_at_prop else None
@@ -138,7 +132,10 @@ def get_all_unread_in_thread(thread_id):
 
 
 def mark_letter_read(page_id):
-    """Mark a letter as read."""
+    """Mark a letter as read. Skips if page is archived."""
+    if is_page_archived(page_id):
+        print(f"[PostLetter] Skipped archived letter {page_id[:8]} for read")
+        return None
     result = notion_req("PATCH", f"/pages/{page_id}", {
         "properties": {
             "Read At": {"date": {"start": NOW_UTC.strftime("%Y-%m-%dT%H:%M:%S.000Z")}}
@@ -149,7 +146,10 @@ def mark_letter_read(page_id):
 
 
 def mark_letter_replied(page_id):
-    """Mark a letter as replied (set Replied? checkbox to True)."""
+    """Mark a letter as replied (set Replied? checkbox to True). Skips if archived."""
+    if is_page_archived(page_id):
+        print(f"[PostLetter] Skipped archived letter {page_id[:8]} for replied")
+        return None
     result = notion_req("PATCH", f"/pages/{page_id}", {
         "properties": {
             "Replied?": {"checkbox": True}
@@ -169,7 +169,10 @@ def mark_all_thread_letters_read_replied(thread_id):
 
 
 def update_letter_thread_id(page_id, thread_id):
-    """Update Thread ID on a letter page."""
+    """Update Thread ID on a letter page. Skips if archived."""
+    if is_page_archived(page_id):
+        print(f"[PostLetter] Skipped archived letter {page_id[:8]} for thread update")
+        return None
     result = notion_req("PATCH", f"/pages/{page_id}", {
         "properties": {
             "Thread ID": {"rich_text": [{"text": {"content": thread_id}}]}
@@ -179,9 +182,14 @@ def update_letter_thread_id(page_id, thread_id):
     return result
 
 
+def default_icon():
+    """Fallback icon if Claude forgets to specify one."""
+    return "💭"
+
+
 # ── Main posting ────────────────────────────────────────────────────────────────
 
-def post_letter(content: str, mood: str, reply_to: str = "", thread_id: str = "",
+def post_letter(content: str, reply_to: str = "", thread_id: str = "",
                 mode: str = "reply", original_subject: str = "", icon: str = "") -> str:
     """
     Post a letter from A to B's Inbox.
@@ -191,19 +199,24 @@ def post_letter(content: str, mood: str, reply_to: str = "", thread_id: str = ""
       reply + existing thread → mark ALL unread in thread as read/replied, post reply
       surprise → create thread, post surprise letter
 
-    Icon: If not provided, defaults to mood-based emoji.
-    Subject: If original_subject provided, uses "Re: {original_subject}" (human-readable).
+    Icon: Claude decides via prompt (YOUR_ICON placeholder). Fallback is 💭.
+    Subject: If original_subject provided, uses "Re: {original_subject}".
              Otherwise falls back to "Re: {thread_id[:24]}".
     """
     final_thread_id = thread_id or ""
 
     # ── REPLY mode ────────────────────────────────────────────────────────────────
     if mode == "reply" and reply_to:
+        # Check if reply_to page is archived
+        if is_page_archived(reply_to):
+            print(f"[PostLetter] Original letter {reply_to[:8]} is archived, cannot reply")
+            return ""
+
         original_thread_id = get_letter_thread_id(reply_to)
         print(f"[PostLetter] Original letter {reply_to[:8]} has Thread ID: {original_thread_id or '(empty)'}")
 
         if original_thread_id:
-            # Thread already exists — use it
+            # Thread already exists
             final_thread_id = original_thread_id
             # Mark ALL unread letters in this thread as read + replied
             marked = mark_all_thread_letters_read_replied(final_thread_id)
@@ -215,7 +228,7 @@ def post_letter(content: str, mood: str, reply_to: str = "", thread_id: str = ""
             create_thread(final_thread_id, last_edit_from="A")
             # Update original letter's Thread ID
             update_letter_thread_id(reply_to, final_thread_id)
-            # Mark ALL unread in this new thread
+            # Mark ALL unread in this new thread (should only be the one we just linked)
             marked = mark_all_thread_letters_read_replied(final_thread_id)
             print(f"[PostLetter] Created thread {final_thread_id}, marked {len(marked)} letter(s)")
 
@@ -233,7 +246,7 @@ def post_letter(content: str, mood: str, reply_to: str = "", thread_id: str = ""
     delay_hours = random.uniform(0.5, 2.0)
     deliver_at = now_jst + dt.timedelta(hours=delay_hours)
 
-    # Subject: prefer original_subject if provided (human-readable)
+    # Subject: prefer original_subject if provided
     if mode == "surprise":
         subject = f"Surprise Letter ({TODAY_JST})"
     elif original_subject:
@@ -247,7 +260,6 @@ def post_letter(content: str, mood: str, reply_to: str = "", thread_id: str = ""
         "From": {"select": {"name": "A"}},
         "To": {"select": {"name": "B"}},
         "Subject": {"title": [{"text": {"content": subject}}]},
-        "Mood": {"select": {"name": mood}},
         "Thread ID": {"rich_text": [{"text": {"content": final_thread_id}}]},
         "Sent At": {"date": {"start": NOW_UTC.strftime("%Y-%m-%dT%H:%M:%S.000Z")}},
         "Delivered At": {"date": {"start": deliver_at.isoformat()}},
@@ -268,8 +280,8 @@ def post_letter(content: str, mood: str, reply_to: str = "", thread_id: str = ""
         ],
     }
 
-    # Add icon: use provided icon or default to mood-based emoji
-    icon_to_use = icon or MOOD_ICONS.get(mood, "💌")
+    # Add icon: use provided icon or fallback to 💭
+    icon_to_use = icon if icon else default_icon()
     payload["icon"] = {"type": "emoji", "emoji": icon_to_use}
 
     result = notion_req("POST", "/pages", payload)
@@ -283,12 +295,11 @@ def post_letter(content: str, mood: str, reply_to: str = "", thread_id: str = ""
 def main():
     parser = argparse.ArgumentParser(description="Post a letter from A to B's Inbox")
     parser.add_argument("--content", required=True, help="Letter body text")
-    parser.add_argument("--mood", required=True, help="Mood: serious/playful/sweet/random")
     parser.add_argument("--thread-id", default="", help="Thread ID (optional)")
     parser.add_argument("--reply-to", default="", help="Original letter ID (required for reply mode)")
     parser.add_argument("--mode", default="reply", choices=["reply", "surprise"], help="Letter mode")
     parser.add_argument("--original-subject", default="", help="Original subject for reply subject (optional)")
-    parser.add_argument("--icon", default="", help="Emoji icon for the page (optional, defaults to mood emoji)")
+    parser.add_argument("--icon", default="", help="Emoji icon for the page (Claude decides, fallback is 💭)")
     args = parser.parse_args()
 
     if args.mode == "reply" and not args.reply_to:
@@ -297,7 +308,6 @@ def main():
 
     page_id = post_letter(
         content=args.content,
-        mood=args.mood,
         reply_to=args.reply_to,
         thread_id=args.thread_id,
         mode=args.mode,

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check A's Inbox for unread letters from B.
 Returns all unread letters grouped by thread (for batch processing).
+Mood is represented by page emoji icon only (no Mood property in DB).
 """
 import json
 import urllib.request
@@ -22,7 +23,7 @@ def notion_req(method, path, payload=None):
 
 
 def get_letter(page_id):
-    """Fetch a letter page's properties."""
+    """Fetch a letter page properties."""
     return notion_req("GET", f"/pages/{page_id}")
 
 
@@ -40,7 +41,7 @@ def check_unread_grouped():
     """
     Return all unread letters from B, grouped by thread.
     Each thread entry represents one conversation that A should respond to with ONE reply.
-    A will fetch full content as needed via the --reply-to parameter.
+    A will fetch full content as needed via --reply-to.
     """
     # Fetch all unread (page_size=50 to cover most cases)
     result = notion_req("POST", f"/databases/{INBOX_ID}/query", {
@@ -54,7 +55,7 @@ def check_unread_grouped():
     for p in result.get("results", []):
         props = p.get("properties", {})
 
-        # Safe extraction: Read At can have date: None in Notion API
+        # Safe extraction: Read At can have date: None
         read_at_prop = props.get("Read At", {})
         read_at_date = read_at_prop.get("date") if read_at_prop else None
         read_at_val = read_at_date.get("start", "") if read_at_date else ""
@@ -72,14 +73,11 @@ def check_unread_grouped():
         delivered_date = delivered_prop.get("date") if delivered_prop else None
         delivered_val = delivered_date.get("start", "") if delivered_date else ""
 
-        mood = props.get("Mood", {}).get("select", {}).get("name", "")
-
         all_unread.append({
             "id": p["id"],
             "subject": subject_text,
             "thread": thread_text,  # empty string = new thread
             "delivered": delivered_val,
-            "mood": mood,
         })
 
     # Group by thread_id (empty thread_id = new thread for that letter)
@@ -102,7 +100,6 @@ def check_unread_grouped():
             "thread_subject": thread_subject,
             "letter_count": len(letters),
             "first_letter_id": letters[0]["id"],
-            "latest_mood": letters[-1]["mood"],
         })
 
     return grouped

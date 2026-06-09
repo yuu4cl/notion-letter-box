@@ -25,10 +25,15 @@
 - - 自己是thread发起者：不用填 -> 收到回信时自动填补
 - - 自己回复已有thread时：新建的送信page中复制想回复的thread的Thread ID
 
+## v1.2 更新
+
+- **Mood → Icon only** — 去掉 Mood DB property，心情改由 page emoji icon 表示，由写信方自行决定
+- **`default_icon()` fallback** — 写信时没指定 icon 就自动用 💭
+
 ## v1.1 更新
 
 - **Thread 批量已读** — 回信时自动把同 thread 的所有未读信标为已读+已回复
-- **信封蜡封 emoji** — 每封信自动带 emoji icon（📝认真 / 🥺撒娇 / 💌甜蜜 / 💭随机），也可以 `--icon` 自定义
+- **信封蜡封 emoji** — 每封信带 emoji icon，可用 `--icon` 自定义
 - **原始标题保留** — 回信 subject 显示 `Re: 原始标题` 而不是 thread ID
 - **零依赖** — 去掉 dotenv，脚本内填 placeholder，拷贝后自行替换即可
 
@@ -58,18 +63,13 @@
    0 17 * * * bash /path/to/letter.sh >> /tmp/letter.log 2>&1
    ```
 
-## 心情标签 (Mood)
+## 信封 Icon
 
-每封信可以带一个心情蜡封：
+每封信的 page emoji 就是心情蜡封 —— 收信人打开前就能看到。写信方自行选择，没选就默认 💭。
 
-| 心情 | 蜡封 |
-|------|------|
-| 认真 | 📝 |
-| 撒娇 | 🥺 |
-| 甜甜的 | 💌 |
-| 随机 | 💭 |
-
-收信的人打开信之前就能看到寄信人的心情，像信封上的蜡封。也可以用 `--icon 🧁` 自定义。
+```bash
+python3 post_letter.py --content "..." --mode surprise --icon "🧁"
+```
 
 ## 设计备忘
 

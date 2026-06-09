@@ -32,12 +32,13 @@ Two-layer letter exchange system inspired by Slowly app (deliberate delay, inten
 | From | select | A / B |
 | To | select | A / B |
 | Subject | title | Letter subject |
-| Mood | select | Mood options (customizable) |
 | Thread ID | rich_text | Empty = new thread; filled = reply |
 | Sent At | date | Timestamp when written |
 | Delivered At | date | Controls when letter is visible |
 | Read At | date | Empty until read |
 | Replied? | checkbox | Auto-set when replied |
+
+> **Note:** Mood is represented by page emoji icon only (no Mood property in code). The DB property can be manually deleted if desired.
 
 ### Layer 2 — Thread DB (shared, auto-linked)
 
@@ -98,15 +99,14 @@ B writes letter → A's Inbox (Thread ID = empty)
 1. `new_thread_id()` — generate unique ID
 2. `create_thread()` — create Thread DB entry
 3. `update_letter_thread_id()` — fill Thread ID on original letter
-4. `mark_letter_read()` — mark original as read
-5. `mark_letter_replied()` — mark original as replied
-6. `update_thread_last_edit()` — set last_edit_from = A
-7. Post reply to B's Inbox
+4. `mark_all_thread_letters_read_replied()` — mark ALL unread letters in thread as read + replied
+5. `update_thread_last_edit()` — set last_edit_from = A
+6. Post reply to B's Inbox (icon: Claude decides via prompt, fallback 💭)
 
 **Reply to existing thread** (original letter has Thread ID):
-1. `mark_letter_read()` + `mark_letter_replied()` on original
+1. `mark_all_thread_letters_read_replied()` — mark all unread letters in thread as read + replied
 2. `update_thread_last_edit()` — update last_edit_from = A
-3. Post reply with existing thread ID
+3. Post reply with existing thread ID (icon: Claude decides via prompt, fallback 💭)
 
 **Surprise letter:**
 1. `new_thread_id()` + `create_thread()`
