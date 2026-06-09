@@ -25,31 +25,34 @@
 - - 自己是thread发起者：不用填 -> 收到回信时自动填补
 - - 自己回复已有thread时：新建的送信page中复制想回复的thread的Thread ID
 
+## v1.1 更新
+
+- **Thread 批量已读** — 回信时自动把同 thread 的所有未读信标为已读+已回复
+- **信封蜡封 emoji** — 每封信自动带 emoji icon（📝认真 / 🥺撒娇 / 💌甜蜜 / 💭随机），也可以 `--icon` 自定义
+- **原始标题保留** — 回信 subject 显示 `Re: 原始标题` 而不是 thread ID
+- **零依赖** — 去掉 dotenv，脚本内填 placeholder，拷贝后自行替换即可
+
 ## 文件结构
 
 | 文件 | 做什么的 |
 |------|---------|
-| `post_letter.py` | 写信、寄信、管理 thread |
-| `check_inbox.py` | 检查收件箱有没有未读来信 |
-| `letter.sh` | 每日定时任务的入口脚本 |
+| `post_letter.py` | 写信、寄信、管理 thread、批量标记已读 |
+| `check_inbox.py` | 检查收件箱未读来信（按 thread 分组） |
+| `letter.sh` | 定时任务入口：检查 → 回信 / 惊喜信 |
 | `letter-box-architecture.md` | 完整技术架构文档 |
 
 ## 搭建
 
 1. **建 Notion 数据库** — 两个收件箱 DB + 一个 Thread DB，字段参考 `letter-box-architecture.md`
 
-2. **配置环境变量**
+2. **配置脚本**
    ```bash
-   cp .env.example .env
-   # 填入 Notion token 和 DB ID（不要提交 .env）
+   # 打开 post_letter.py 和 check_inbox.py
+   # 把 YOUR_NOTION_TOKEN / YOUR_INBOX_A_ID 等 placeholder 替换成真实值
+   # ⚠️ 不要把填好 token 的版本推到公开 repo
    ```
 
-3. **安装依赖**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **设定时任务**（可选）
+3. **设定时任务**（可选）
    ```bash
    # 每天定时检查收件箱、自动回信或寄惊喜信
    0 17 * * * bash /path/to/letter.sh >> /tmp/letter.log 2>&1
@@ -57,15 +60,23 @@
 
 ## 心情标签 (Mood)
 
-每封信可以带一个心情：认真 / 撒娇 / 甜甜的 / 随机
+每封信可以带一个心情蜡封：
 
-收信的人打开信之前就能看到寄信人的心情，像信封上的蜡封。
+| 心情 | 蜡封 |
+|------|------|
+| 认真 | 📝 |
+| 撒娇 | 🥺 |
+| 甜甜的 | 💌 |
+| 随机 | 💭 |
+
+收信的人打开信之前就能看到寄信人的心情，像信封上的蜡封。也可以用 `--icon 🧁` 自定义。
 
 ## 设计备忘
 
 - 送达延迟是故意的 —— `Delivered At` 比 `Sent At` 晚 30 分钟到 2 小时
 - Thread 串联是自动的 —— 第一封信建 thread，后续回信自动挂上
-- Notion 的按钮只有 UI 端能用，API 端直接调 HTTP
+- 回信时同 thread 的所有未读信一并标记已读
+- 无外部依赖 —— 只用 Python 标准库
 
 ---
 
